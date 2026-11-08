@@ -42,7 +42,8 @@ Stack: Go, Docker, GitHub Actions, Terraform, AWS (ECR, ECS Fargate, ALB, CloudW
 
 | Pot                  | Vsebina                                                                   |
 | -------------------- | ------------------------------------------------------------------------- |
-| `app/`               | Storitev v Go, testi in Dockerfile                                        |
+| `cmd/`               | Storitev v Go in testi (`go.mod` je v korenu repozitorija)                |
+| `image/`             | Dockerfile za service                                                     |
 | `infra/bootstrap/`   | Enkratni Terraform: bucket za state, GitHub OIDC provider, role za deploy |
 | `infra/service/`     | Terraform, ki ga poganja pipeline: network, ECR, ECS, ALB, alarmi         |
 | `.github/workflows/` | `ci.yml` in `cd.yml`                                                      |

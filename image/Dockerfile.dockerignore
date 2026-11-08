@@ -1,0 +1,9 @@
+# Applies to the build context (repository root) when building with image/Dockerfile.
+# Start by ignoring everything, then allow only what the build needs.
+# The last matching rule wins, so the test files are excluded again at the end:
+# tests are not needed to build the binary, and ignoring them keeps the layer
+# cache stable when only tests change.
+*
+!go.mod
+!cmd
+cmd/*_test.go

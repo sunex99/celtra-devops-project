@@ -172,7 +172,7 @@ V unit testih uporabim fake clock in fake vir naključnosti, da so outputi deter
 
 Vrstni red dela po tem, ko specifikacijo še enkrat preberem:
 
-1. Storitev in unit testi (`app/`).
+1. Storitev in unit testi (`cmd/`).
 2. Dockerfile z lokalnim testom containerja.
 3. CI workflow (`build`, `test`, `scan`) na brezplačnem GitHub repozitoriju, ki teče zares.
 4. Terraform `infra/service`, preverjen s `terraform fmt` in `terraform validate`.
