@@ -1,0 +1,157 @@
+name: CD
+
+# After CI passes on main: publish image -> deploy with Terraform -> smoke test.
+#
+# DISABLED: never run (no AWS account). `publish` has `if: false` and the
+# other jobs depend on it. Details: docs/SPEC.md, section 6.
+
+on:
+  # Starts when the CI workflow finishes on main.
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+# One deploy at a time; a running deploy is never cancelled.
+concurrency:
+  group: cd-production
+  cancel-in-progress: false
+
+# Account-specific values are repository variables, not files.
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-central-1' }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'data-service' }}
+
+jobs:
+  # Pushes the image CI already tested (no rebuild).
+  publish:
+    name: Publish image
+    # To enable, replace `if: false` with:
+    #   if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' }}
+    if: false
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      actions: read # download the artifact from the CI run
+      id-token: write # OIDC login to AWS
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      # The exact commit CI tested.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      # The image built by CI.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: data-service-image
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Load image
+        run: docker load -i data-service.tar
+
+      # Short-lived credentials via OIDC, no stored keys.
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+
+      # Tag with the commit SHA, push, and pass on the digest (that is what gets deployed).
+      - name: Push image to ECR
+        id: push
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          COMMIT: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          image="${REGISTRY}/${ECR_REPOSITORY}:${COMMIT}"
+          docker tag data-service:ci "$image"
+          docker push "$image" | tee push.log
+          digest="$(grep -oE 'sha256:[0-9a-f]{64}' push.log | tail -n 1)"
+          if [ -z "$digest" ]; then
+            echo "Could not read the image digest from the push output" >&2
+            exit 1
+          fi
+          echo "Pushed $image with digest $digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+  # Rolls out the new image with Terraform.
+  deploy:
+    name: Deploy to production
+    needs: publish
+    runs-on: ubuntu-latest
+    # Same environment as publish: the AWS role trusts one OIDC subject.
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: infra/service
+    outputs:
+      service_url: ${{ steps.url.outputs.service_url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.7
+          terraform_wrapper: false # so `terraform output -raw` returns clean text
+
+      # The state bucket comes from a variable, not from the repo.
+      - name: Terraform init
+        env:
+          STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -backend-config="key=data-service/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}"
+
+      # Apply exactly the plan shown in the log.
+      - name: Terraform plan
+        env:
+          IMAGE_DIGEST: ${{ needs.publish.outputs.digest }}
+        run: |
+          terraform plan -input=false -out=tfplan \
+            -var="image_digest=${IMAGE_DIGEST}" \
+            -var="aws_region=${AWS_REGION}" \
+            -var="ecr_repository_name=${ECR_REPOSITORY}"
+
+      # Waits for healthy tasks; fails if ECS rolled the deployment back.
+      - name: Terraform apply
+        run: terraform apply -input=false tfplan
+
+      - name: Read the service URL
+        id: url
+        run: echo "service_url=$(terraform output -raw service_url)" >> "$GITHUB_OUTPUT"
+
+  # Same contract check CI runs on the container, now on the live service.
+  smoke-test:
+    name: Smoke test
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Check the deployed service
+        env:
+          SERVICE_URL: ${{ needs.deploy.outputs.service_url }}
+        run: bash scripts/check-service.sh "$SERVICE_URL"

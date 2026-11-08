@@ -103,18 +103,34 @@ Supply chain: third-party actions pinnam na **polni commit SHA**, privzeti `perm
 
 ## 6. CD
 
-Workflow `cd.yml` teče samo ob pushu na `main` in samo če je CI na istem commitu uspel.
+Workflow `cd.yml` se sproži, ko se CI workflow konča na `main` (`workflow_run`). Job `publish` teče samo, če je CI uspel in je tekel za push (ne za pull request z vejo, ki se slučajno imenuje `main`). Vse nadaljnje jobe veriži `needs`. Checkout vedno uporabi commit, ki ga je testiral CI.
+
+**Workflow je napisan, a ga še nikoli nisem zagnal**, ker nimam AWS accounta. Da ne bi nikoli nič deployal, ima job `publish` v datoteki trdo zapisan `if: false`, jobi `deploy` in `smoke-test` pa so odvisni od njega, zato se tudi ta dva preskočita. Nobena nastavitev v GitHubu ga ne more vklopiti, spremeniti moram pogoj v datoteki.
 
 | Job          | Kaj naredi                                                                                                    |
 | ------------ | ------------------------------------------------------------------------------------------------------------- |
-| `publish`    | Prenese testirani artifact in ga pushne v ECR. Zabeleži **digest** image-a                                    |
-| `deploy`     | Teče v GitHub environmentu `production`. Požene `terraform apply` z digestom kot vhodno spremenljivko         |
-| `smoke-test` | Pokliče `/healthz` in `/{id}/data` na naslovu ALB (output iz Terraforma); če odgovor ni po dogovoru, run pade |
+| `publish`    | Prenese artifact iz CI runa (isti image, ki je prestal teste), ga pushne v ECR z oznako commit SHA in iz izpisa pusha prebere **digest** |
+| `deploy`     | Teče v GitHub environmentu `production`. Požene `terraform init`, `plan` in `apply` tega plana z digestom kot vhodno spremenljivko |
+| `smoke-test` | Požene `scripts/check-service.sh` na naslovu ALB (output `service_url` iz Terraforma), isti script kot container test v CI; če odgovor ni po dogovoru, run pade |
 
 - **Brez dolgoživih ključev.** Jobi dobijo kratkotrajne AWS credentials s prevzemom IAM role prek GitHub OIDC ([odločitev 5](ODLOCITVE.md#5-github-oidc-namesto-aws-ključev)). Trust policy role-a omejim na ta repozitorij in environment `production`.
 - **Promocija, ne ponoven build.** V production gre digest, ki je prestal teste.
 - **Rollback.** ECS storitev ima vklopljen deployment circuit breaker z rollbackom. Slabo spremembo lahko vrnem tudi z revertom v Gitu, ki gre skozi isti pipeline.
 - **En deploy naenkrat.** `concurrency` group prepreči, da bi dva deploya hkrati pisala v Terraform state.
+- **Neuspel deploy se vidi.** Service ima `wait_for_steady_state`, zato `terraform apply` počaka, da so novi taski healthy. Če je circuit breaker naredil rollback, apply pade in z njim workflow.
+- **Plan in apply sta ista.** `apply` izvede shranjen `tfplan`, zato je to, kar vidim v logu, natanko to, kar se uveljavi.
+- **Nastavitve niso v repozitoriju.** ARN role-a, ime bucketa za state, region in ime ECR repozitorija so repository variables, ne datoteke. Nobena ni skrivnost.
+
+### Kaj bi moral narediti pred prvim deployem
+
+Ker AWS accounta nimam, tega nisem naredil. Vrstni red bi bil:
+
+1. V AWS accountu ročno poženem `infra/bootstrap`: ECR repozitorij, in (ko bo napisano) S3 bucket za state, GitHub OIDC provider ter IAM role za deploy. Trust policy role-a dovoli samo `repo:<owner>/<repo>:environment:production`.
+2. V GitHubu ustvarim environment `production` in repository variables `AWS_ROLE_ARN`, `TF_STATE_BUCKET`, po potrebi `AWS_REGION` in `ECR_REPOSITORY`.
+3. V `cd.yml` zamenjam `if: false` na jobu `publish` s pogojem, ki je zapisan v komentarju tik nad njim (CI uspešen in zagnan za push). Naslednji uspešen CI na `main` sproži deploy.
+4. Po preizkusu stack odstranim (`terraform destroy`), ker ALB in dva taska stanejo, dokler tečejo.
+
+Workflow uporablja tri akcije, ki niso GitHubove (`aws-actions/configure-aws-credentials`, `aws-actions/amazon-ecr-login`, `hashicorp/setup-terraform`). Vse tri so uradne akcije proizvajalcev in so pinnane na commit SHA.
 
 ## 7. Infrastruktura (Terraform)
 
@@ -211,7 +227,7 @@ Vrstni red dela po tem, ko specifikacijo še enkrat preberem:
 | Docker image                      | Narejeno; zgrajen in zagnan lokalno ter zgrajen v CI        |
 | CI workflow                       | Narejeno in preizkušeno na GitHubu: build, unit testi, container test. Trivy scan ni dodan |
 | Terraform                         | `infra/service` in ECR v `infra/bootstrap` napisana; `fmt` in `validate` uspeta, nikoli pa nista bila apply-ana (nimam AWS accounta). Preostanek bootstrapa je samo opisan |
-| CD workflow                       | Ni začeto; brez AWS accounta ga ni mogoče izvesti           |
+| CD workflow                       | Napisan (`cd.yml`), nikoli zagnan in ne preverjen z orodjem; brez AWS accounta ga ni mogoče izvesti. Trajno izklopljen (`if: false`) |
 
 To tabelo sproti posodabljam, da vedno drži.
 
