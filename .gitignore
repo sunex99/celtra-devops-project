@@ -2,3 +2,10 @@
 .sbx
 CLAUDE.md
 .claude/
+# Terraform: local working files and state must never be committed.
+# .terraform.lock.hcl is committed on purpose (it pins provider versions).
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log

@@ -1,0 +1,38 @@
+variable "aws_region" {
+  description = "AWS region to deploy to."
+  type        = string
+  default     = "eu-central-1"
+}
+
+variable "project_name" {
+  description = "Name prefix for all resources."
+  type        = string
+  default     = "data-service"
+}
+
+variable "ecr_repository_name" {
+  description = "Name of the existing ECR repository that holds the image. The repository is created once, outside this module."
+  type        = string
+  default     = "data-service"
+}
+
+variable "image_digest" {
+  description = "Digest of the image to deploy, e.g. sha256:<64 hex characters>. Deploying by digest means the exact tested image runs."
+  type        = string
+
+  validation {
+    condition     = can(regex("^sha256:[0-9a-f]{64}$", var.image_digest))
+    error_message = "image_digest must look like sha256: followed by 64 lowercase hex characters."
+  }
+}
+
+variable "desired_count" {
+  description = "Number of running tasks. Two keeps the service up while one task is replaced."
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.desired_count >= 1
+    error_message = "desired_count must be at least 1."
+  }
+}
