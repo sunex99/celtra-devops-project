@@ -68,12 +68,12 @@ Naloga ne pove, ali je `timestamp` število ali niz, in ne omeji `accountId`, ki
 
 **Odločitev:** dva ločena root modula.
 
-- `infra/bootstrap`: poženem ga enkrat, ročno. Ustvari S3 bucket za state, GitHub OIDC provider in role za deploy. State je lokalen.
+- `infra/bootstrap`: poženem ga enkrat, ročno. Ustvari ECR repozitorij, S3 bucket za state, GitHub OIDC provider in role za deploy. State je lokalen. V kodi je zaenkrat samo ECR, ostalo je opisano.
 - `infra/service`: poganja ga pipeline. State je v S3 z native lockingom (`use_lockfile`), brez DynamoDB.
 
 Verzije Terraforma in providerjev pinnam, `.terraform.lock.hcl` je v repozitoriju.
 
-**Zakaj:** pipeline ne more ustvariti state-a in role-a, od katerih je sam odvisen. Z ločitvijo role pipeline-a omejim na resource aplikacije, tako da ne more spreminjati same sebe.
+**Zakaj:** pipeline ne more ustvariti state-a in role-a, od katerih je sam odvisen. Z ločitvijo role pipeline-a omejim na resource aplikacije, tako da ne more spreminjati same sebe. ECR repozitorij je v bootstrapu, ker ga mora pipeline imeti, preden pushne prvi image, in ker brisanje service-a ne sme pobrisati image-ov.
 **Zavrnjeno:** en modul za vse (pipeline bi upravljal lastne pravice), DynamoDB za locking (odveč) in Terraform Cloud (zunanja storitev).
 **Posledica:** en ročni korak, ki ga opišem v README. State bootstrapa moram varno hraniti. Brez AWS accounta oba modula preverim samo s `terraform fmt` in `validate` (`init -backend=false`).
 

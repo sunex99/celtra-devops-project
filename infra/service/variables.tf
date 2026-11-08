@@ -38,6 +38,30 @@ variable "container_port" {
   default     = 8080
 }
 
+variable "task_cpu" {
+  description = "CPU units for each task (1024 = 1 vCPU). Must be a valid Fargate combination with task_memory."
+  type        = number
+  default     = 256
+}
+
+variable "task_memory" {
+  description = "Memory in MiB for each task."
+  type        = number
+  default     = 512
+}
+
+variable "log_retention_days" {
+  description = "How long CloudWatch keeps the service logs."
+  type        = number
+  default     = 14
+}
+
+variable "alarm_actions" {
+  description = "ARNs notified when an alarm fires, e.g. an SNS topic. Empty means alarms only change state."
+  type        = list(string)
+  default     = []
+}
+
 variable "desired_count" {
   description = "Number of running tasks. Two keeps the service up while one task is replaced."
   type        = number

@@ -122,21 +122,22 @@ Dva ločena root modula ([odločitev 2](ODLOCITVE.md#2-terraform-namesto-cdk), [
 
 **`infra/bootstrap`** poženem **enkrat, ročno**. Ustvari tisto, kar pipeline potrebuje sam:
 
-- S3 bucket za Terraform state (versioning, encryption, blokiran public access) z native lockingom prek S3 lockfile,
-- GitHub OIDC identity provider,
-- IAM role za deploy.
+- ECR repozitorij (scan on push, immutable tags, lifecycle policy za brisanje starih image-ov). Je tu in ne v `infra/service`, ker mora obstajati, preden pipeline pushne image, in ker brisanje service-a ne sme pobrisati image-ov. To je edini del bootstrapa, ki je že napisan v kodi,
+- S3 bucket za Terraform state (versioning, encryption, blokiran public access) z native lockingom prek S3 lockfile. Samo opisano, ni kodirano,
+- GitHub OIDC identity provider. Samo opisano, ni kodirano,
+- IAM role za deploy. Samo opisano, ni kodirano.
 
 **`infra/service`** poganja **pipeline** ob vsakem deployu:
 
 | Resource                      | Opomba                                                                                                       |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | VPC, 2 AZ, public subnets     | Brez NAT gatewaya za MVP ([odločitev 6](ODLOCITVE.md#6-public-subnets-brez-nat))                             |
-| ECR repozitorij               | Scan on push, immutable tags, lifecycle policy za brisanje starih image-ov                                   |
+| ECR repozitorij               | Ne ustvarja ga ta modul; ga samo poišče po imenu (ustvari ga `infra/bootstrap`)                              |
 | ECS cluster + Fargate service | 2 taska v 2 AZ, circuit breaker z rollbackom, Container Insights ([odločitev 3](ODLOCITVE.md#3-ecs-fargate)) |
 | ALB + target group + listener | Health check na `/healthz`; za MVP port 80                                                                   |
 | Security groups               | Taski sprejemajo promet samo iz security groupa ALB                                                          |
 | CloudWatch log group          | Retention izrecno nastavljen na 14 dni                                                                       |
-| IAM roli (task in execution)  | Least privilege; task role nima pravic, ker aplikacija ne kliče AWS API-jev                                  |
+| IAM execution role            | Least privilege: pull samo iz tega ECR repozitorija in pisanje samo v ta log group. Task role-a ni, ker aplikacija ne kliče AWS API-jev, zato container nima AWS credentials |
 | CloudWatch alarmi             | Glej razdelek 8                                                                                              |
 
 Verzije Terraforma in providerjev pinnam, `.terraform.lock.hcl` je v repozitoriju.
@@ -145,7 +146,7 @@ Verzije Terraforma in providerjev pinnam, `.terraform.lock.hcl` je v repozitorij
 
 - **Logi:** aplikacija piše JSON na stdout, `awslogs` driver jih pošilja v CloudWatch Logs.
 - **Metrike:** ALB in ECS metrike v CloudWatch ter Container Insights.
-- **Alarmi (MVP):** delež 5xx na ALB, število unhealthy hostov in p99 latency. Pošiljanje notifikacij (SNS na e-pošto ali chat) pustim kot spremenljivko.
+- **Alarmi (MVP):** število 5xx odgovorov aplikacije, število unhealthy hostov in p99 latency. Pošiljanje notifikacij (SNS na e-pošto ali chat) pustim kot spremenljivko.
 - **Pozneje:** Grafana Cloud nad CloudWatch ([razdelek 13](#13-nadaljnje-izboljšave)).
 
 ## 9. Varnost
@@ -206,10 +207,10 @@ Vrstni red dela po tem, ko specifikacijo še enkrat preberem:
 | Del                               | Status                                                      |
 | --------------------------------- | ----------------------------------------------------------- |
 | Specifikacija in zapisi odločitev | Napisano                                                    |
-| Storitev in unit testi            | Ni začeto                                                   |
-| Docker image                      | Ni začeto                                                   |
-| CI workflow                       | Ni začeto                                                   |
-| Terraform                         | Ni začeto; preverjanje bo samo offline (nimam AWS accounta) |
+| Storitev in unit testi            | Narejeno; testi tečejo lokalno in v CI                      |
+| Docker image                      | Narejeno; zgrajen in zagnan lokalno ter zgrajen v CI        |
+| CI workflow                       | Narejeno in preizkušeno na GitHubu: build, unit testi, container test. Trivy scan ni dodan |
+| Terraform                         | `infra/service` in ECR v `infra/bootstrap` napisana; `fmt` in `validate` uspeta, nikoli pa nista bila apply-ana (nimam AWS accounta). Preostanek bootstrapa je samo opisan |
 | CD workflow                       | Ni začeto; brez AWS accounta ga ni mogoče izvesti           |
 
 To tabelo sproti posodabljam, da vedno drži.
