@@ -150,13 +150,33 @@ Verzije Terraforma in providerjev pinnam, `.terraform.lock.hcl` je v repozitorij
 
 ## 9. Varnost
 
+Kaj je zaščiteno:
+
 - Brez shranjenih cloud credentials; OIDC z ozko omejenim trustom.
 - Distroless image brez root pravic; root filesystem taska je read-only.
-- Pinnane actions, base images, Go moduli in Terraform provideri; Dependabot jih sproti posodablja.
-- Trivy v CI in ECR scan on push.
-- Taski niso neposredno dosegljivi, do njih lahko samo ALB.
+- Pinnane actions, base images, Go moduli in Terraform provideri. Posodabljam jih ročno, Dependabot še ni nastavljen (glej razdelek 13).
+- ECR scan on push.
 - V repozitoriju ni secrets; storitev jih ne potrebuje.
-- Znana vrzel, ki jo za MVP sprejemam: promet je HTTP, ne HTTPS.
+
+### Kaj je javno dostopno
+
+Service je javen, ker naloga zahteva HTTP service, ki ga kličejo odjemalci. Izpostavljenost je omejena takole:
+
+| Del                   | Dostop z interneta                                  | Zakaj                                                                                                                                              |
+| --------------------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ALB                   | **Da, z vseh naslovov (`0.0.0.0/0`), samo port 80** | Edina javna vstopna točka                                                                                                                          |
+| Taski                 | Ne                                                  | Security group sprejema promet samo iz security groupa ALB, čeprav imajo taski javne IP-je ([odločitev 6](ODLOCITVE.md#6-public-subnets-brez-nat)) |
+| Vsi ostali porti      | Ne                                                  | Security groupi privzeto zavrnejo vse, kar ni izrecno dovoljeno                                                                                    |
+| Odhodni promet taskov | Samo HTTPS (443)                                    | Dovolj za pull image-a iz ECR in pošiljanje logov                                                                                                  |
+
+### Znane vrzeli, ki jih za MVP sprejemam
+
+- **Brez avtentikacije:** vsak, ki pozna DNS ime ALB, lahko kliče `/<accountId>/data`. Naloga avtentikacije ne zahteva, service pa vrača samo naključen niz, timestamp in validiran `accountId`, torej ni česa razkriti.
+- **Brez HTTPS:** promet ni šifriran. Za HTTPS potrebujem ACM certifikat in domeno, ki je nimam.
+- **Brez WAF in rate limitinga:** ob veliki količini zahtevkov bi bil glavno tveganje strošek.
+- **Edina validacija vhoda** je regex za `accountId` ([odločitev 7](ODLOCITVE.md#7-oblika-odgovora)).
+
+Utemeljitev je v [odločitvi 9](ODLOCITVE.md#9-javen-dostop-brez-avtentikacije-in-https), ukrepi za pravi production pa so v razdelku 13.
 
 ## 10. Testiranje
 
@@ -201,7 +221,9 @@ To tabelo sproti posodabljam, da vedno drži.
 - **Private subnets** z NAT ali VPC endpointi, brez javnih IP-jev na taskih.
 - **Autoscaling** glede na število zahtevkov ali CPU.
 - **Grafana Cloud** za dashboarde in alerte.
-- **AWS WAF** pred ALB.
+- **AWS WAF** pred ALB: rate limiting in osnovna zaščita pred zlorabo.
+- **Avtentikacija ali omejitev dostopa:** API key ali JWT, ali pa omejitev vira v security groupu na znane IP naslove.
+- **Trivy scan v CI** in **Dependabot** za posodabljanje pinov.
 - **Blue/green ali canary deploy** (CodeDeploy) s samodejnim rollbackom ob alarmih.
 - **Podpisovanje image-ov** (cosign) in SBOM ob vsakem image-u.
 
