@@ -2,6 +2,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -47,10 +49,17 @@ func (s *server) handleData(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// randomHex returns 16 random bytes as a 32 character hex string.
+func randomHex() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
 func main() {
 	s := &server{
 		now:  time.Now,
-		data: func() string { return "placeholder" }, // TODO: Remove placeholder and add real random data
+		data: randomHex,
 	}
 
 	srv := &http.Server{
@@ -60,5 +69,5 @@ func main() {
 	}
 
 	log.Printf("listening on %s", srv.Addr)
-	log.Fatal(srv.ListenAndServe())
+	log.Fatal(srv.ListenAndServe()) // Listens and serves requests
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -56,6 +57,23 @@ func TestData(t *testing.T) {
 	want := `{"accountId":"acme","timestamp":1767323045,"data":"deadbeef"}`
 	if body := strings.TrimSpace(rec.Body.String()); body != want {
 		t.Errorf("body = %s, want %s", body, want)
+	}
+}
+
+func TestRandomHex(t *testing.T) {
+	got := randomHex()
+
+	if len(got) != 32 {
+		t.Errorf("len = %d, want 32", len(got))
+	}
+	if _, err := hex.DecodeString(got); err != nil {
+		t.Errorf("%q is not valid hex: %v", got, err)
+	}
+}
+
+func TestRandomHexDiffersBetweenCalls(t *testing.T) {
+	if a, b := randomHex(), randomHex(); a == b {
+		t.Errorf("two calls returned the same value %q", a)
 	}
 }
 
