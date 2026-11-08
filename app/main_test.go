@@ -77,6 +77,36 @@ func TestRandomHexDiffersBetweenCalls(t *testing.T) {
 	}
 }
 
+func TestDataAcceptsValidAccountIDs(t *testing.T) {
+	for _, id := range []string{"a", "acme-42", "ACME_42", strings.Repeat("a", 64)} {
+		if rec := do(http.MethodGet, "/"+id+"/data"); rec.Code != http.StatusOK {
+			t.Errorf("account id %q: status = %d, want %d", id, rec.Code, http.StatusOK)
+		}
+	}
+}
+
+func TestDataRejectsInvalidAccountIDs(t *testing.T) {
+	invalid := map[string]string{
+		"space":    "has%20space",
+		"dot":      "a.b",
+		"html":     "%3Cscript%3E",
+		"slash":    "a%2Fb",
+		"too long": strings.Repeat("a", 65),
+	}
+	for name, id := range invalid {
+		t.Run(name, func(t *testing.T) {
+			rec := do(http.MethodGet, "/"+id+"/data")
+
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+			}
+			if strings.Contains(rec.Body.String(), "accountId") {
+				t.Errorf("error response should not contain a data body, got %q", rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestDataRejectsOtherMethods(t *testing.T) {
 	rec := do(http.MethodPost, "/acme/data")
 

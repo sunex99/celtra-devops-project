@@ -7,8 +7,12 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"regexp"
 	"time"
 )
+
+// accountIDPattern is what we accept as an account id
+var accountIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 // server holds what the handlers depend on. The clock and the data source are
 // fields so tests can replace them with fixed values.
@@ -39,11 +43,17 @@ func handleHealth(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
-// handleData returns the account id from the path with a timestamp and data.
+// handleData returns the account id from the path with a timestamp and data (400 if the account id has an unexpected format)
 func (s *server) handleData(w http.ResponseWriter, r *http.Request) {
+	accountID := r.PathValue("accountId")
+	if !accountIDPattern.MatchString(accountID) {
+		http.Error(w, "invalid account id", http.StatusBadRequest)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(dataResponse{
-		AccountID: r.PathValue("accountId"),
+		AccountID: accountID,
 		Timestamp: s.now().UTC().Unix(),
 		Data:      s.data(),
 	})
