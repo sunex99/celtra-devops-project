@@ -26,6 +26,18 @@ variable "image_digest" {
   }
 }
 
+variable "vpc_cidr" {
+  description = "IP range of the VPC. Each subnet gets a /24 slice of it."
+  type        = string
+  default     = "10.0.0.0/16"
+}
+
+variable "container_port" {
+  description = "Port the service listens on inside the container (the PORT default in the app)."
+  type        = number
+  default     = 8080
+}
+
 variable "desired_count" {
   description = "Number of running tasks. Two keeps the service up while one task is replaced."
   type        = number
