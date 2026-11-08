@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Build the image once. Later jobs test and deploy this exact image, so what is tested is what is shipped (see docs/ODLOCITVE.md, decision 4).
+  # Build the image once. Later jobs test and deploy this exact image, so what is tested is what is shipped (see docs/SPEC.md, section 4).
   build:
     name: Build image
     runs-on: ubuntu-latest

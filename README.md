@@ -1,8 +1,8 @@
 # devops-project
 
-Majhen HTTP projekt s avtomatizirano potjo do produkcije: vsaka sprememba se zbuilda, testira in deploya prek CI/CD pipeline-a.
+Majhna HTTP storitev v Go z avtomatizirano potjo do produkcije: vsaka sprememba se zgradi, testira in (po zasnovi) deploya prek CI/CD pipeline-a na AWS.
 
-> **Status: faza načrtovanja.** Specifikacija in zapisi odločitev so napisani, storitev, pipeline in infrastruktura pa še niso izdelani. Kaj točno obstaja, piše v [12. razdelku specifikacije](docs/SPEC.md#12-status).
+> **Kaj je zares zagnano:** storitev, image in CI na GitHubu. Terraform je napisan in validiran, **ni pa bil nikoli apply-an**, CD pa je napisan in **trajno izklopljen**, ker nimam AWS accounta. Podrobnosti: [status](docs/SPEC.md#2-status).
 
 ## Kaj dela
 
@@ -16,38 +16,52 @@ Majhen HTTP projekt s avtomatizirano potjo do produkcije: vsaka sprememba se zbu
 }
 ```
 
-## CI/CD
+## Pipeline
 
 ```mermaid
 flowchart LR
     A["Pull request ali push"] --> B["CI: build image-a"]
-    B --> C["CI: test istega image-a"]
-    B --> D["CI: scan istega image-a"]
+    A --> C["CI: unit testi"]
+    B --> D["CI: container test"]
     C --> E{"main in zeleno?"}
     D --> E
-    E -->|da| F["CD: push image-a v ECR"]
+    E -->|da| F["CD: push v ECR"]
     F --> G["CD: terraform apply na ECS Fargate"]
     G --> H["CD: smoke test"]
 ```
 
-Stack: Go, Docker, GitHub Actions, Terraform, AWS (ECR, ECS Fargate, ALB, CloudWatch).
+CI (zgornji del) teče na GitHubu. CD (spodnji del) je napisan, a izklopljen.
 
 ## Dokumentacija
 
-- **[Specifikacija](docs/SPEC.md):** načrt po korakih s povezavami na vire.
-- **[Zapisi odločitev](docs/ODLOCITVE.md):** zakaj sem se za posamezno stvar odločil in kaj sem še pretehtal.
+- **[Specifikacija in odločitve](docs/SPEC.md):** povzetek, status, arhitektura, odločitve in viri. Začni tu.
 - [Izvirna naloga](docs/DevOps_Homework.pdf).
-
-## Načrtovana struktura repozitorija
-
-| Pot                  | Vsebina                                                                   |
-| -------------------- | ------------------------------------------------------------------------- |
-| `cmd/`               | Storitev v Go in testi (`go.mod` je v korenu repozitorija)                |
-| `image/`             | Dockerfile za service                                                     |
-| `infra/bootstrap/`   | Enkratni Terraform: bucket za state, GitHub OIDC provider, role za deploy |
-| `infra/service/`     | Terraform, ki ga poganja pipeline: network, ECR, ECS, ALB, alarmi         |
-| `.github/workflows/` | `ci.yml` in `cd.yml`                                                      |
 
 ## Zagon
 
-Dopolnim med implementacijo: lokalni zagon, testi in enkratni koraki za bootstrap.
+Potrebuješ Go (verzija iz `go.mod`) in Docker.
+
+```bash
+go test -race ./...                                      # unit testi
+docker build -f image/Dockerfile -t data-service:dev .   # image
+docker run --rm -p 8080:8080 data-service:dev            # zagon
+bash scripts/check-service.sh http://localhost:8080
+```
+
+Terraform se preveri brez AWS accounta:
+
+```bash
+cd infra/service && terraform init -backend=false && terraform validate
+```
+
+## Struktura
+
+| Pot                  | Vsebina                                                         |
+| -------------------- | --------------------------------------------------------------- |
+| `cmd/`               | Storitev v Go in testi (`go.mod` je v korenu)                   |
+| `image/`             | Dockerfile                                                      |
+| `scripts/`           | `check-service.sh`: preveri pogodbo storitve (CI in smoke test) |
+| `infra/service/`     | Terraform, ki ga poganja pipeline: omrežje, ALB, ECS, alarmi    |
+| `infra/bootstrap/`   | Enkratni Terraform. V kodi je zaenkrat samo ECR repozitorij     |
+| `.github/workflows/` | `ci.yml` in `cd.yml` (izklopljen)                               |
+| `docs/`              | Specifikacija z odločitvami                                     |

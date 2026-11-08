@@ -144,7 +144,7 @@ resource "aws_ecs_service" "app" {
   network_configuration {
     subnets          = aws_subnet.public[*].id
     security_groups  = [aws_security_group.tasks.id]
-    assign_public_ip = true # Needed to reach ECR without a NAT gateway (decision 6).
+    assign_public_ip = true # Needed to reach ECR without a NAT gateway (docs/SPEC.md, section 5).
   }
 
   load_balancer {

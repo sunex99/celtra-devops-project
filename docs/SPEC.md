@@ -1,47 +1,35 @@
 # Specifikacija: storitev z avtomatiziranim CI/CD
 
-Status: osnutek pred začetkom implementacije. Nič od opisanega še ni zgrajeno (glej [razdelek 12](#12-status)).
+## 1. Povzetek
 
-## 1. Cilj in obseg
+Naredil sem majhno HTTP storitev v Go, pri kateri gre vsaka sprememba na `main` skozi CI/CD pipeline: build, testi in deploy v production na AWS (ECS Fargate). Naloga ([PDF](DevOps_Homework.pdf)) ima štiri zahteve:
 
-Želim narediti preprosto production HTTP storitev, pri kateri gre **vsaka sprememba skozi CI/CD pipeline** in se po uspešnih testih **samodejno deploya v production**.
-
-Naloga ([DevOps_Homework.pdf](DevOps_Homework.pdf)) ima štiri zahteve:
-
-| #   | Zahteva                                                                                                          | Kje je obravnavana                     |
-| --- | ---------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
-| 1   | Ena GET pot `/<accountId>/data` z odgovorom `{accountId, timestamp, data}` in testi, ki tečejo pred productionom | [3](#3-storitev), [10](#10-testiranje) |
-| 2   | Celotna storitev v enem Docker image-u, brez zunanjih dependencies in trajnega shranjevanja                      | [4](#4-docker-image)                   |
-| 3   | CI zgradi image in požene teste; build in test sta ločena koraka                                                 | [5](#5-ci-github-actions)              |
-| 4   | CD po uspešnem CI deploya storitev v production                                                                  | [6](#6-cd)                             |
-
-**V obsegu (MVP):** storitev, image, pipeline, infrastructure as code, osnovni monitoring.
-
-**Zunaj obsega:** HTTPS in lastna domena, staging okolje, autoscaling, WAF, Grafana Cloud. Vse to navajam kot možne nadgradnje v [razdelku 13](#13-nadaljnje-izboljšave).
-
-**Izbran stack:** Go, Docker, GitHub Actions, Terraform, AWS (ECR, ECS Fargate, ALB, CloudWatch). Razloge za vsako izbiro sem zapisal v [docs/ODLOCITVE.md](ODLOCITVE.md).
-
-## 2. Arhitektura
+| # | Zahteva | Kako sem jo rešil |
+| --- | --- | --- |
+| 1 | GET `/<accountId>/data` z JSON odgovorom in testi pred productionom | Go storitev, unit testi in container test v CI ([3](#3-storitev-in-image), [4](#4-cicd)) |
+| 2 | Vse v enem Docker image-u, brez dependencies in trajnega shranjevanja | Multi-stage build, statičen binary v distroless image-u ([3](#3-storitev-in-image)) |
+| 3 | CI zgradi image in požene teste, ločena koraka | Job `build` zgradi image enkrat, drugi jobi preverijo isti image ([4](#4-cicd)) |
+| 4 | CD po uspešnem CI deploya v production | `cd.yml` in Terraform. **Napisano, a ne izvedeno** ([4](#4-cicd), [5](#5-infrastruktura)) |
 
 ```mermaid
 flowchart LR
-    dev(["Developer"]) -->|"pull request ali push na main"| gh["GitHub repozitorij"]
+    dev(["Developer"]) -->|"pull request ali push na main"| gh["GitHub"]
     gh --> ci
 
     subgraph GHA["GitHub Actions"]
-        ci["CI: build, test, scan"] -->|"samo main, CI zelen"| cd["CD: publish, deploy, smoke test"]
+        ci["CI: build, unit testi, container test"] -->|"main in CI zelen"| cd["CD: publish, deploy, smoke test"]
     end
 
-    cd -->|"OIDC, kratkotrajne credentials"| role["IAM role za deploy"]
-    cd -->|"push image-a po digestu"| ecr[("ECR")]
+    cd -->|"OIDC, kratkotrajne credentials"| role["IAM role"]
+    cd -->|"push po digestu"| ecr[("ECR")]
     cd -->|"terraform apply"| ecs
 
     subgraph AWS["AWS account"]
         role
         ecr
-        ecs["ECS Fargate storitev, 2 taska"]
+        ecs["ECS Fargate, 2 taska"]
         alb["Application Load Balancer"]
-        cw["CloudWatch: logi, metrike, alarmi"]
+        cw["CloudWatch: logi in alarmi"]
         alb --> ecs
         ecr -.->|"pull image-a"| ecs
         ecs --> cw
@@ -51,212 +39,155 @@ flowchart LR
     user(["Client"]) -->|"GET /accountId/data"| alb
 ```
 
-**Potek:** pull request požene samo CI. Merge v `main` požene CI in, če je zelen, CD. CD objavi **isti image, ki je prestal teste**, ga s Terraformom deploya na ECS Fargate in na koncu preveri delujočo storitev. Če novi taski ne postanejo healthy, ECS samodejno naredi rollback na prejšnjo verzijo.
+**Potek:** pull request požene samo CI. Po merge-u na `main` CD objavi **isti image, ki je prestal teste**, ga s Terraformom deploya na ECS in preveri delujočo storitev. Če novi taski ne postanejo healthy, ECS samodejno naredi rollback.
 
-## 3. Storitev
+## 2. Status
 
-Majhna storitev v Go, samo s standardno knjižnico (`net/http`). Razlogi: [odločitev 1](ODLOCITVE.md#1-go-za-storitev).
+Kar je označeno kot zagnano, sem res zagnal. Česar nisem, je izrecno povedano.
 
-| Pot                     | Obnašanje                                                 |
-| ----------------------- | --------------------------------------------------------- |
-| `GET /{accountId}/data` | Vrne JSON spodaj, status 200                              |
-| `GET /healthz`          | Vrne 200 `ok`; uporabljata ga load balancer in smoke test |
-| vse ostalo              | 404, za napačno metodo na znani poti 405                  |
+| Del | Status |
+| --- | --- |
+| Storitev in 11 unit testov | **Zagnano**: lokalno in v CI |
+| Docker image | **Zagnano**: zgrajen in zagnan lokalno, zgrajen v CI |
+| CI (build, unit testi, container test) | **Zagnano na GitHubu**, vsi trije jobi uspešni |
+| Terraform `infra/service`, ECR v `infra/bootstrap` | Napisano. `terraform fmt` in `validate` uspeta. **Nikoli `plan` ali `apply`**, ker nimam AWS accounta |
+| Preostanek bootstrapa (state bucket, OIDC provider, deploy role) | Samo opisano |
+| CD workflow | Napisan, **trajno izklopljen** (`if: false`), ni preverjen z orodjem |
+| Trivy scan, Dependabot | Nisem naredil zaradi časa ([7](#7-nadaljnje-izboljšave)) |
 
-Odgovor ([odločitev 7](ODLOCITVE.md#7-oblika-odgovora)):
+Zato ne morem trditi, da AWS sprejme konfiguracijo (imena, IAM pravice, kvote). `validate` preveri samo sintakso in reference med resource-i.
+
+## 3. Storitev in image
+
+| Pot | Obnašanje |
+| --- | --- |
+| `GET /{accountId}/data` | JSON spodaj, status 200 |
+| `GET /healthz` | 200 `ok`; uporablja ga load balancer |
+| vse ostalo | 404, napačna metoda na znani poti 405 |
 
 ```json
-{
-  "accountId": "acme-42",
-  "timestamp": 1767323045,
-  "data": "9f2c1e5a7b0d4c3e8a6f1b2d3c4e5f60"
-}
+{ "accountId": "acme-42", "timestamp": 1767323045, "data": "9f2c1e5a7b0d4c3e8a6f1b2d3c4e5f60" }
 ```
 
-- `accountId` povzamem iz poti. Veljati mora `^[A-Za-z0-9_-]{1,64}$`, sicer vrnem 400.
-- `timestamp` je Unix time v sekundah. Unix time je definiran glede na UTC, zato ni dvoumnosti glede timezone-a.
-- `data` je 16 naključnih bajtov iz kriptografskega vira operacijskega sistema, zapisanih v hex.
-- Vsak odgovor ima `Cache-Control: no-store`, ker je vedno dinamičen.
+JSON logi gredo na stdout, port je iz `PORT` (privzeto 8080), ob SIGTERM storitev elegantno konča (graceful shutdown), da deploy ne prekine zahtevkov v teku.
 
-Delovanje: JSON logi na stdout, port iz spremenljivke `PORT` (privzeto 8080), graceful shutdown ob SIGTERM, da rolling deploy ne prekine zahtevkov v teku.
+**Image:** multi-stage Dockerfile. Statičen build (`CGO_ENABLED=0`) v `golang` image-u, nato samo binary v `gcr.io/distroless/static-debian12:nonroot`. Image nima shella ne package managerja in teče kot non-root user. Oba base image-a sta **pinnana na digest**, zato je build ponovljiv in premaknjen tag ne more nič spremeniti.
 
-## 4. Docker image
+**Odločitve:**
 
-Multi-stage Dockerfile ([Docker multi-stage](https://docs.docker.com/build/building/multi-stage/)):
+- **Go, samo standardna knjižnica.** Storitev vrne le majhen JSON, bistvo naloge sta pipeline in infrastruktura. Go da statičen binary in nič dependencies za pinnanje. Zavrnjeno: Python (dependencies in runtime v image-u), Scala (težak JVM image), PHP (brez prednosti).
+- **`timestamp` je Unix time v sekundah** (JSON število). Je definiran glede na UTC, zato ni dvoumnosti, naloga pa ga kaže brez narekovajev. Zavrnjeno: ISO 8601 niz in milisekunde.
+- **`accountId` mora ustrezati `^[A-Za-z0-9_-]{1,64}$`, sicer 400.** Ker ga vračam v odgovoru, ne vračam poljubnega vnosa. `data` je 16 naključnih bajtov iz `crypto/rand`, zapisanih v hex.
 
-1. **Builder:** uradni `golang` image, statičen build (`CGO_ENABLED=0`), `-trimpath`, odstranjeni simboli.
-2. **Runtime:** `gcr.io/distroless/static-debian12:nonroot`. Nima shella ne package managerja, zato je attack surface majhen, proces pa teče kot non-root user.
+## 4. CI/CD
 
-Base image pinnam na **digest**, posodablja ga Dependabot. Image ne potrebuje zunanjih dependencies ne trajnega shranjevanja.
+### CI
 
-## 5. CI (GitHub Actions)
+Workflow `ci.yml` teče ob vsakem pull requestu in pushu na `main`.
 
-Workflow `ci.yml` teče ob vsakem pull requestu in vsakem pushu na `main`. Joba sta **ločena**, da sta build in test ločena koraka, kot zahteva naloga ([odločitev 4](ODLOCITVE.md#4-build-enkrat-promocija-po-digestu)).
+| Job | Kaj naredi | Kaj dokaže |
+| --- | --- | --- |
+| `build` | Enkrat zgradi image in ga naloži kot artifact | Image se zgradi |
+| `container-test` (potrebuje `build`) | Naloži **isti artifact**, preveri da ne teče kot root, ga zažene in požene `scripts/check-service.sh` | Image deluje in drži dogovorjeni JSON, vključno z 400, 404 in 405 |
+| `test` | `gofmt`, `go vet`, `go test -race` | Obnašanje handlerjev in validacija |
 
-| Job     | Potrebuje | Kaj naredi                                                                                                                                                    |
-| ------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `build` | /         | Enkrat zgradi image in ga naloži kot artifact (tar image-a)                                                                                                   |
-| `test`  | `build`   | Požene `gofmt`, `go vet` in `go test -race`. Nato naloži **isti artifact**, zažene container ter preveri `/healthz` in `/{id}/data` glede na dogovorjeni JSON |
-| `scan`  | `build`   | S Trivy pregleda isti image; pade ob HIGH ali CRITICAL ranljivostih, za katere obstaja fix                                                                    |
+Actions so pinnane na **commit SHA**, workflow ima samo `contents: read`. Isti script `check-service.sh` služi tudi kot smoke test po deployu, zato je pogodba preverjena na enem mestu.
 
-Supply chain: third-party actions pinnam na **polni commit SHA**, privzeti `permissions` workflowa so samo read, Dependabot spremlja GitHub Actions, Go module in Dockerfile.
+### CD
 
-## 6. CD
+Workflow `cd.yml` se sproži, ko se CI konča na `main`, in verigi tri jobe:
 
-Workflow `cd.yml` se sproži, ko se CI workflow konča na `main` (`workflow_run`). Job `publish` teče samo, če je CI uspel in je tekel za push (ne za pull request z vejo, ki se slučajno imenuje `main`). Vse nadaljnje jobe veriži `needs`. Checkout vedno uporabi commit, ki ga je testiral CI.
+| Job | Kaj naredi |
+| --- | --- |
+| `publish` | Vzame artifact iz CI runa (ne gradi znova), ga pushne v ECR in prebere **digest** |
+| `deploy` | `terraform plan`, nato `apply` istega plana z digestom kot vhodom |
+| `smoke-test` | Požene `check-service.sh` na naslovu ALB |
 
-**Workflow je napisan, a ga še nikoli nisem zagnal**, ker nimam AWS accounta. Da ne bi nikoli nič deployal, ima job `publish` v datoteki trdo zapisan `if: false`, jobi `deploy` in `smoke-test` pa so odvisni od njega, zato se tudi ta dva preskočita. Nobena nastavitev v GitHubu ga ne more vklopiti, spremeniti moram pogoj v datoteki.
+`wait_for_steady_state` naredi, da `apply` počaka na healthy taske. Če ECS naredi rollback, `apply` pade in z njim workflow. `concurrency` group omeji deploy na enega naenkrat.
 
-| Job          | Kaj naredi                                                                                                    |
-| ------------ | ------------------------------------------------------------------------------------------------------------- |
-| `publish`    | Prenese artifact iz CI runa (isti image, ki je prestal teste), ga pushne v ECR z oznako commit SHA in iz izpisa pusha prebere **digest** |
-| `deploy`     | Teče v GitHub environmentu `production`. Požene `terraform init`, `plan` in `apply` tega plana z digestom kot vhodno spremenljivko |
-| `smoke-test` | Požene `scripts/check-service.sh` na naslovu ALB (output `service_url` iz Terraforma), isti script kot container test v CI; če odgovor ni po dogovoru, run pade |
+**Napisano, a nikoli zagnano.** Job `publish` ima trdo zapisan `if: false`, ostala dva sta odvisna od njega, zato workflow ne more ničesar deployati.
 
-- **Brez dolgoživih ključev.** Jobi dobijo kratkotrajne AWS credentials s prevzemom IAM role prek GitHub OIDC ([odločitev 5](ODLOCITVE.md#5-github-oidc-namesto-aws-ključev)). Trust policy role-a omejim na ta repozitorij in environment `production`.
-- **Promocija, ne ponoven build.** V production gre digest, ki je prestal teste.
-- **Rollback.** ECS storitev ima vklopljen deployment circuit breaker z rollbackom. Slabo spremembo lahko vrnem tudi z revertom v Gitu, ki gre skozi isti pipeline.
-- **En deploy naenkrat.** `concurrency` group prepreči, da bi dva deploya hkrati pisala v Terraform state.
-- **Neuspel deploy se vidi.** Service ima `wait_for_steady_state`, zato `terraform apply` počaka, da so novi taski healthy. Če je circuit breaker naredil rollback, apply pade in z njim workflow.
-- **Plan in apply sta ista.** `apply` izvede shranjen `tfplan`, zato je to, kar vidim v logu, natanko to, kar se uveljavi.
-- **Nastavitve niso v repozitoriju.** ARN role-a, ime bucketa za state, region in ime ECR repozitorija so repository variables, ne datoteke. Nobena ni skrivnost.
+**Kaj bi naredil pred prvim deployem:**
 
-### Kaj bi moral narediti pred prvim deployem
+1. Ročno poženem `infra/bootstrap` (ECR, state bucket, OIDC provider, deploy role).
+2. V GitHubu ustvarim environment `production` in repository variables `AWS_ROLE_ARN` ter `TF_STATE_BUCKET`.
+3. Zamenjam `if: false` s pogojem, ki je zapisan v komentarju nad njim.
+4. Po preizkusu stack odstranim (`terraform destroy`), ker ALB in taski stanejo, dokler tečejo.
 
-Ker AWS accounta nimam, tega nisem naredil. Vrstni red bi bil:
+**Odločitve:**
 
-1. V AWS accountu ročno poženem `infra/bootstrap`: ECR repozitorij, in (ko bo napisano) S3 bucket za state, GitHub OIDC provider ter IAM role za deploy. Trust policy role-a dovoli samo `repo:<owner>/<repo>:environment:production`.
-2. V GitHubu ustvarim environment `production` in repository variables `AWS_ROLE_ARN`, `TF_STATE_BUCKET`, po potrebi `AWS_REGION` in `ECR_REPOSITORY`.
-3. V `cd.yml` zamenjam `if: false` na jobu `publish` s pogojem, ki je zapisan v komentarju tik nad njim (CI uspešen in zagnan za push). Naslednji uspešen CI na `main` sproži deploy.
-4. Po preizkusu stack odstranim (`terraform destroy`), ker ALB in dva taska stanejo, dokler tečejo.
+- **Build enkrat, deploy po digestu.** Če bi vsak korak gradil znova, bi se testirano lahko razlikovalo od deployanega. Digest določa natanko en image, tage pa je mogoče premakniti. Zavrnjeno: ponoven build v vsakem koraku in testiranje iz registry-ja (netestirani image-i bi bili v registry-ju).
+- **GitHub OIDC namesto AWS ključev.** Shranjeni ključi so dolgoživi in lahko uidejo, OIDC token je kratkotrajen. Trust policy role-a dovoli samo ta repozitorij in environment `production`. Zavrnjeno: access keys v secrets, self-hosted runnerji.
+- **CD napisan, a trajno izklopljen.** Brez AWS accounta ga ne morem preizkusiti, vklopljen pa bi se po vsakem CI-ju sprožil in padel. Pogoj je v datoteki, ne v nastavitvi, da ga po pomoti ne more vklopiti nič drugega. Zavrnjeno: vklop prek repository variable in brez workflowa (manjkal bi del, ki ga naloga zahteva).
 
-Workflow uporablja tri akcije, ki niso GitHubove (`aws-actions/configure-aws-credentials`, `aws-actions/amazon-ecr-login`, `hashicorp/setup-terraform`). Vse tri so uradne akcije proizvajalcev in so pinnane na commit SHA.
+## 5. Infrastruktura
 
-## 7. Infrastruktura (Terraform)
+Vsa infrastruktura je v Terraformu, v dveh ločenih modulih. Verzije Terraforma in providerja so pinnane, `.terraform.lock.hcl` je v repozitoriju.
 
-Dva ločena root modula ([odločitev 2](ODLOCITVE.md#2-terraform-namesto-cdk), [odločitev 8](ODLOCITVE.md#8-struktura-terraforma-in-state)).
+**`infra/bootstrap`** (enkrat, ročno): ECR repozitorij (immutable tags, scan on push, lifecycle policy) je napisan. State bucket, OIDC provider in deploy role so samo opisani.
 
-**`infra/bootstrap`** poženem **enkrat, ročno**. Ustvari tisto, kar pipeline potrebuje sam:
+**`infra/service`** (poganja ga pipeline):
 
-- ECR repozitorij (scan on push, immutable tags, lifecycle policy za brisanje starih image-ov). Je tu in ne v `infra/service`, ker mora obstajati, preden pipeline pushne image, in ker brisanje service-a ne sme pobrisati image-ov. To je edini del bootstrapa, ki je že napisan v kodi,
-- S3 bucket za Terraform state (versioning, encryption, blokiran public access) z native lockingom prek S3 lockfile. Samo opisano, ni kodirano,
-- GitHub OIDC identity provider. Samo opisano, ni kodirano,
-- IAM role za deploy. Samo opisano, ni kodirano.
+| Resource | Opomba |
+| --- | --- |
+| VPC, 2 AZ, public subnets | Brez NAT |
+| ALB, target group, listener | Health check na `/healthz`, port 80 |
+| Security groups | Taski sprejemajo promet samo iz security groupa ALB |
+| ECS cluster, task definition, service | 2 taska, rolling deploy brez izpada, circuit breaker z rollbackom |
+| IAM execution role | Pull samo iz tega ECR repozitorija, pisanje samo v ta log group |
+| CloudWatch | Log group (14 dni), 3 alarmi: število 5xx, unhealthy taski, p99 latency |
 
-**`infra/service`** poganja **pipeline** ob vsakem deployu:
+**Odločitve:**
 
-| Resource                      | Opomba                                                                                                       |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| VPC, 2 AZ, public subnets     | Brez NAT gatewaya za MVP ([odločitev 6](ODLOCITVE.md#6-public-subnets-brez-nat))                             |
-| ECR repozitorij               | Ne ustvarja ga ta modul; ga samo poišče po imenu (ustvari ga `infra/bootstrap`)                              |
-| ECS cluster + Fargate service | 2 taska v 2 AZ, circuit breaker z rollbackom, Container Insights ([odločitev 3](ODLOCITVE.md#3-ecs-fargate)) |
-| ALB + target group + listener | Health check na `/healthz`; za MVP port 80                                                                   |
-| Security groups               | Taski sprejemajo promet samo iz security groupa ALB                                                          |
-| CloudWatch log group          | Retention izrecno nastavljen na 14 dni                                                                       |
-| IAM execution role            | Least privilege: pull samo iz tega ECR repozitorija in pisanje samo v ta log group. Task role-a ni, ker aplikacija ne kliče AWS API-jev, zato container nima AWS credentials |
-| CloudWatch alarmi             | Glej razdelek 8                                                                                              |
+- **Terraform namesto CDK.** `terraform fmt` in `validate` delujeta brez AWS accounta, kar je pri meni odločilno. Za tako majhen nabor resource-ov logike, ki bi jo CDK olajšal, ni. Zavrnjeno: CDK (Celtrina prednost, a potrebuje Node in bootstrap) in gradnja obeh.
+- **ECS Fargate za ALB.** Stateless container ne potrebuje strežnikov za patchanje, ECS ima rolling deploy in circuit breaker. Zavrnjeno: App Runner (skrije omrežje in nadzor nad deployem), Lambda (naloga zahteva Docker image), EKS (preveč za en container). Strošek: ALB in taski stanejo stalno.
+- **Public subnets brez NAT.** NAT ali VPC endpoints za pull image-a in pošiljanje logov stanejo stalno, kar je veliko za tako majhno storitev. Taski imajo javne IP-je, a se nanje ni mogoče povezati, ker security group sprejema promet samo iz ALB.
+- **Bootstrap ločen od service-a.** Pipeline ne more ustvariti state-a in role-a, od katerih je odvisen, in ne sme spreminjati lastnih pravic. ECR je v bootstrapu, ker mora obstajati pred prvim pushem in ker brisanje storitve ne sme pobrisati image-ov. State storitve je v S3 z native lockingom (`use_lockfile`), brez DynamoDB.
+- **Najmanjše pravice za taske.** Taski nimajo task role-a, ker aplikacija ne kliče nobenega AWS API-ja. Execution role ima lasten policy namesto AWS-managed, container pa teče kot non-root, z read-only filesystemom in brez Linux capabilities.
 
-Verzije Terraforma in providerjev pinnam, `.terraform.lock.hcl` je v repozitoriju.
+## 6. Varnost in znane vrzeli
 
-## 8. Monitoring
+Brez shranjenih credentials, distroless non-root image, pinnane actions in base image-i, taski brez AWS credentials, ECR scan on push.
 
-- **Logi:** aplikacija piše JSON na stdout, `awslogs` driver jih pošilja v CloudWatch Logs.
-- **Metrike:** ALB in ECS metrike v CloudWatch ter Container Insights.
-- **Alarmi (MVP):** število 5xx odgovorov aplikacije, število unhealthy hostov in p99 latency. Pošiljanje notifikacij (SNS na e-pošto ali chat) pustim kot spremenljivko.
-- **Pozneje:** Grafana Cloud nad CloudWatch ([razdelek 13](#13-nadaljnje-izboljšave)).
+| Del | Dostop z interneta |
+| --- | --- |
+| ALB | **Da, z vseh naslovov, samo port 80** |
+| Taski | Ne: security group sprejema samo promet iz ALB, čeprav imajo javne IP-je |
+| Vsi ostali porti | Ne |
 
-## 9. Varnost
+**Odločitev: javen dostop brez avtentikacije in HTTPS.** Naloga zahteva javno dostopen HTTP service, odgovor pa ne vsebuje občutljivih podatkov. HTTPS zahteva certifikat in domeno, ki je nimam. Zavrnjeno: omejitev na moj IP (storitev je namenjena odjemalcem), API key ali JWT in WAF (obseg in strošek).
 
-Kaj je zaščiteno:
+**Posledica:** vsak, ki pozna DNS ime ALB, lahko kliče storitev. Glavno tveganje je strošek ob veliki količini zahtevkov in nešifriran promet. Ukrepi za pravi production so v naslednjem razdelku.
 
-- Brez shranjenih cloud credentials; OIDC z ozko omejenim trustom.
-- Distroless image brez root pravic; root filesystem taska je read-only.
-- Pinnane actions, base images, Go moduli in Terraform provideri. Posodabljam jih ročno, Dependabot še ni nastavljen (glej razdelek 13).
-- ECR scan on push.
-- V repozitoriju ni secrets; storitev jih ne potrebuje.
+## 7. Nadaljnje izboljšave
 
-### Kaj je javno dostopno
+- **Trivy scan** v CI in **Dependabot**. Pinnani digesti in SHA-ji se ne posodabljajo sami, zato je to pomembno za dolgotrajen projekt.
+- **`terraform fmt` in `validate` v CI**, da koda ostane veljavna.
+- **HTTPS** (ACM, Route 53), **avtentikacija** ali omejitev po IP in **AWS WAF** z rate limitom.
+- **Private subnets** z NAT ali VPC endpointi.
+- **Staging okolje** z ročnim approvalom, **autoscaling**, **Grafana Cloud**.
+- **Blue/green deploy** (CodeDeploy), **podpisovanje image-ov** (cosign) in SBOM.
+- Dokončati `infra/bootstrap`: state bucket, OIDC provider, deploy role.
 
-Service je javen, ker naloga zahteva HTTP service, ki ga kličejo odjemalci. Izpostavljenost je omejena takole:
+## 8. Viri
 
-| Del                   | Dostop z interneta                                  | Zakaj                                                                                                                                              |
-| --------------------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ALB                   | **Da, z vseh naslovov (`0.0.0.0/0`), samo port 80** | Edina javna vstopna točka                                                                                                                          |
-| Taski                 | Ne                                                  | Security group sprejema promet samo iz security groupa ALB, čeprav imajo taski javne IP-je ([odločitev 6](ODLOCITVE.md#6-public-subnets-brez-nat)) |
-| Vsi ostali porti      | Ne                                                  | Security groupi privzeto zavrnejo vse, kar ni izrecno dovoljeno                                                                                    |
-| Odhodni promet taskov | Samo HTTPS (443)                                    | Dovolj za pull image-a iz ECR in pošiljanje logov                                                                                                  |
-
-### Znane vrzeli, ki jih za MVP sprejemam
-
-- **Brez avtentikacije:** vsak, ki pozna DNS ime ALB, lahko kliče `/<accountId>/data`. Naloga avtentikacije ne zahteva, service pa vrača samo naključen niz, timestamp in validiran `accountId`, torej ni česa razkriti.
-- **Brez HTTPS:** promet ni šifriran. Za HTTPS potrebujem ACM certifikat in domeno, ki je nimam.
-- **Brez WAF in rate limitinga:** ob veliki količini zahtevkov bi bil glavno tveganje strošek.
-- **Edina validacija vhoda** je regex za `accountId` ([odločitev 7](ODLOCITVE.md#7-oblika-odgovora)).
-
-Utemeljitev je v [odločitvi 9](ODLOCITVE.md#9-javen-dostop-brez-avtentikacije-in-https), ukrepi za pravi production pa so v razdelku 13.
-
-## 10. Testiranje
-
-| Raven                        | Kje                 | Kaj dokaže                                                                                     |
-| ---------------------------- | ------------------- | ---------------------------------------------------------------------------------------------- |
-| Unit testi (`go test -race`) | CI job `test`       | Obnašanje handlerja: oblika odgovora, dinamični podatki, validacija inputa, napake, 404 in 405 |
-| Container test               | CI job `test`       | Zgrajen image se zažene, streže obe poti in drži dogovorjeni JSON                              |
-| Smoke test                   | CD job `smoke-test` | Deployana storitev za pravim load balancerjem deluje                                           |
-
-V unit testih uporabim fake clock in fake vir naključnosti, da so outputi deterministični. Poseben test preveri, da se pravi output med klici razlikuje.
-
-## 11. Koraki implementacije
-
-Vrstni red dela po tem, ko specifikacijo še enkrat preberem:
-
-1. Storitev in unit testi (`cmd/`).
-2. Dockerfile z lokalnim testom containerja.
-3. CI workflow (`build`, `test`, `scan`) na brezplačnem GitHub repozitoriju, ki teče zares.
-4. Terraform `infra/service`, preverjen s `terraform fmt` in `terraform validate`.
-5. Terraform `infra/bootstrap`, preverjen enako.
-6. CD workflow; AWS korake napišem, a jih ne morem izvesti.
-7. Konfiguracija Dependabota in navodila za zagon v README.
-8. Posodobitev razdelka 12 s tem, kar sem res zagnal.
-
-## 12. Status
-
-| Del                               | Status                                                      |
-| --------------------------------- | ----------------------------------------------------------- |
-| Specifikacija in zapisi odločitev | Napisano                                                    |
-| Storitev in unit testi            | Narejeno; testi tečejo lokalno in v CI                      |
-| Docker image                      | Narejeno; zgrajen in zagnan lokalno ter zgrajen v CI        |
-| CI workflow                       | Narejeno in preizkušeno na GitHubu: build, unit testi, container test. Trivy scan ni dodan |
-| Terraform                         | `infra/service` in ECR v `infra/bootstrap` napisana; `fmt` in `validate` uspeta, nikoli pa nista bila apply-ana (nimam AWS accounta). Preostanek bootstrapa je samo opisan |
-| CD workflow                       | Napisan (`cd.yml`), nikoli zagnan in ne preverjen z orodjem; brez AWS accounta ga ni mogoče izvesti. Trajno izklopljen (`if: false`) |
-
-To tabelo sproti posodabljam, da vedno drži.
-
-## 13. Nadaljnje izboljšave
-
-- **HTTPS:** ACM certifikat, Route 53 zapis, redirect z HTTP na HTTPS.
-- **Staging okolje** z ročnim approvalom pred productionom.
-- **Private subnets** z NAT ali VPC endpointi, brez javnih IP-jev na taskih.
-- **Autoscaling** glede na število zahtevkov ali CPU.
-- **Grafana Cloud** za dashboarde in alerte.
-- **AWS WAF** pred ALB: rate limiting in osnovna zaščita pred zlorabo.
-- **Avtentikacija ali omejitev dostopa:** API key ali JWT, ali pa omejitev vira v security groupu na znane IP naslove.
-- **Trivy scan v CI** in **Dependabot** za posodabljanje pinov.
-- **Blue/green ali canary deploy** (CodeDeploy) s samodejnim rollbackom ob alarmih.
-- **Podpisovanje image-ov** (cosign) in SBOM ob vsakem image-u.
-
-## 14. Viri
-
-| Povezava                                                                                                                                                                           | Zakaj je pomembna                                             |
-| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| [Amazon ECS developer guide](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/Welcome.html)                                                                             | Osnovni pojmi runtime-a: clusterji, servisi, task definitions |
-| [ECS deployment circuit breaker](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/deployment-circuit-breaker.html)                                                      | Mehanizem samodejnega rollbacka iz razdelka 6                 |
-| [Amazon ECR user guide](https://docs.aws.amazon.com/AmazonECR/latest/userguide/what-is-ecr.html)                                                                                   | Registry image-ov, scan on push, lifecycle policies           |
-| [Application Load Balancer](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/introduction.html)                                                                 | Target groupi in health checki                                |
-| [IAM OIDC identity providers](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_create_oidc.html)                                                                | AWS stran prijave brez ključev iz CI                          |
-| [Container Insights](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/ContainerInsights.html)                                                                        | ECS metrike brez lastnega agenta                              |
-| [GitHub: OIDC v AWS](https://docs.github.com/en/actions/how-tos/security-for-github-actions/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services) | GitHub stran prijave brez ključev in pogoji trusta            |
-| [GitHub: secure use of Actions](https://docs.github.com/en/actions/reference/security/secure-use)                                                                                  | Zakaj actions pinnam na SHA in zožim permissions              |
-| [GitHub: environments za deploy](https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment)                                 | Environment `production` in njegova protection rules          |
-| [Docker multi-stage](https://docs.docker.com/build/building/multi-stage/)                                                                                                          | Majhen končni image brez build orodij                         |
-| [Terraform S3 backend](https://developer.hashicorp.com/terraform/language/backend/s3)                                                                                              | Remote state in native locking                                |
-| [Terraform AWS provider](https://registry.terraform.io/providers/hashicorp/aws/latest/docs)                                                                                        | Referenca vseh resourcov                                      |
+| Povezava | Zakaj |
+| --- | --- |
+| [ECS developer guide](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/Welcome.html) | Osnovni pojmi: cluster, service, task definition |
+| [ECS rolling deployment](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/deployment-type-ecs.html) | Deploy brez izpada (minimum in maximum healthy percent) |
+| [ECS deployment circuit breaker](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/deployment-circuit-breaker.html) | Samodejni rollback |
+| [ECS task execution role](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_execution_IAM_role.html) | Katere pravice potrebuje zagon taska |
+| [Amazon ECR](https://docs.aws.amazon.com/AmazonECR/latest/userguide/what-is-ecr.html) | Registry, scan on push, lifecycle policies |
+| [Application Load Balancer](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/introduction.html) | Target groupi in health checki |
+| [Container Insights](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/ContainerInsights.html) | ECS metrike brez lastnega agenta |
+| [IAM OIDC provider](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_create_oidc.html) | AWS stran prijave brez ključev |
+| [GitHub: OIDC v AWS](https://docs.github.com/en/actions/how-tos/security-for-github-actions/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services) | GitHub stran prijave in pogoji trusta |
+| [GitHub: secure use of Actions](https://docs.github.com/en/actions/reference/security/secure-use) | Zakaj pinnam na SHA in zožam permissions |
+| [GitHub: environments](https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment) | Environment `production` |
+| [GitHub: workflow_run](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows) | CD se sproži po koncu CI |
+| [GitHub: artifacts](https://docs.github.com/en/actions/tutorials/store-and-share-data) | Prenos image-a med joboma in workflowoma |
+| [Docker multi-stage](https://docs.docker.com/build/building/multi-stage/) | Majhen končni image |
+| [Distroless](https://github.com/GoogleContainerTools/distroless) | Zakaj runtime image nima shella |
+| [Terraform S3 backend](https://developer.hashicorp.com/terraform/language/backend/s3) | Remote state in native locking |
+| [terraform validate](https://developer.hashicorp.com/terraform/cli/commands/validate) | Kaj validate preveri in česa ne |
+| [Terraform AWS provider](https://registry.terraform.io/providers/hashicorp/aws/latest/docs) | Referenca resource-ov |

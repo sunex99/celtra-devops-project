@@ -3,7 +3,7 @@ name: CD
 # After CI passes on main: publish image -> deploy with Terraform -> smoke test.
 #
 # DISABLED: never run (no AWS account). `publish` has `if: false` and the
-# other jobs depend on it. Details: docs/SPEC.md, section 6.
+# other jobs depend on it. Details: docs/SPEC.md, section 4.
 
 on:
   # Starts when the CI workflow finishes on main.
