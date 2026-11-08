@@ -1,10 +1,7 @@
 # Network: one VPC with two public subnets in two availability zones.
 #
 # The tasks run in public subnets and get public IPs so they can pull the
-# image from ECR and send logs to CloudWatch without a NAT gateway, which would
-# cost money all the time (docs/ODLOCITVE.md, decision 6). They are still not
-# reachable from the internet: their security group only accepts traffic from
-# the load balancer.
+# image from ECR and send logs to CloudWatch without a NAT gateway.
 
 # Availability zones that are currently usable in the chosen region.
 data "aws_availability_zones" "available" {
@@ -65,7 +62,6 @@ resource "aws_route_table_association" "public" {
 }
 
 # The VPC's default security group allows all traffic between its members.
-# Declaring it with no rules removes that, so nothing uses it by accident.
 resource "aws_default_security_group" "default" {
   vpc_id = aws_vpc.main.id
 }
