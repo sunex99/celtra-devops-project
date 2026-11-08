@@ -16,6 +16,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Build the image once. Later jobs test and deploy this exact image, so what is tested is what is shipped (see docs/ODLOCITVE.md, decision 4).
+  build:
+    name: Build image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build image
+        run: docker build -f image/Dockerfile -t data-service:ci .
+
+      # Jobs run on separate machines, so the image is saved to a tar file and passed on as a workflow artifact.
+      - name: Save image to a tar file
+        run: docker save data-service:ci -o data-service.tar
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: data-service-image
+          path: data-service.tar
+          retention-days: 7
+          if-no-files-found: error
+
   test:
     name: Unit tests
     runs-on: ubuntu-latest
