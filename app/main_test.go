@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/hex"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -112,6 +114,48 @@ func TestDataRejectsOtherMethods(t *testing.T) {
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestEnvOr(t *testing.T) {
+	t.Setenv("TEST_PORT", "9999")
+	if got := envOr("TEST_PORT", "8080"); got != "9999" {
+		t.Errorf("set variable: got %q, want %q", got, "9999")
+	}
+	if got := envOr("TEST_PORT_NOT_SET", "8080"); got != "8080" {
+		t.Errorf("unset variable: got %q, want %q", got, "8080")
+	}
+}
+
+// TestRunShutsDownGracefully starts a real server on a free port, checks that
+// it answers, then cancels the context and expects run to return without error.
+func TestRunShutsDownGracefully(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, ln, newHandler(testServer())) }()
+
+	resp, err := http.Get("http://" + ln.Addr().String() + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("run returned %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("server did not shut down after the context was cancelled")
 	}
 }
 

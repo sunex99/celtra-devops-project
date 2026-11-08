@@ -2,12 +2,17 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"log"
+	"log/slog"
+	"net"
 	"net/http"
+	"os"
+	"os/signal"
 	"regexp"
+	"syscall"
 	"time"
 )
 
@@ -66,18 +71,60 @@ func randomHex() string {
 	return hex.EncodeToString(b)
 }
 
+// run serves h on ln until ctx is cancelled, then shuts down gracefully:
+// it stops accepting new connections and gives requests that are already running up to 10 seconds to finish.
+func run(ctx context.Context, ln net.Listener, h http.Handler) error {
+	srv := &http.Server{
+		Handler:           h,
+		ReadHeaderTimeout: 5 * time.Second, // Without a header timeout a slow client can hold a connection open forever.
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Serve(ln) }()
+
+	select {
+	case err := <-errCh:
+		return err // The server failed on its own.
+	case <-ctx.Done():
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return srv.Shutdown(shutdownCtx)
+}
+
+// envOr returns the value of the environment variable key, or fallback if it is empty.
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
 func main() {
+	// Logs are JSON on stdout, which is where a container platform collects them.
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+
 	s := &server{
 		now:  time.Now,
 		data: randomHex,
 	}
 
-	srv := &http.Server{
-		Addr:              ":8080",
-		Handler:           newHandler(s),
-		ReadHeaderTimeout: 5 * time.Second, // Without a header timeout a slow client can hold a connection open forever.
+	addr := ":" + envOr("PORT", "8080")
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		slog.Error("listen failed", "err", err)
+		os.Exit(1)
 	}
 
-	log.Printf("listening on %s", srv.Addr)
-	log.Fatal(srv.ListenAndServe()) // Listens and serves requests
+	// ctx is cancelled on Ctrl+C or SIGTERM, which is what ECS sends to stop a task.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	slog.Info("listening", "addr", addr)
+	if err := run(ctx, ln, newHandler(s)); err != nil {
+		slog.Error("server failed", "err", err)
+		os.Exit(1)
+	}
+	slog.Info("stopped")
 }
