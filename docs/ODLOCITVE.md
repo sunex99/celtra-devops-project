@@ -2,16 +2,17 @@
 
 Ključne odločitve, kratko: kaj sem izbral, zakaj in kaj sem zavrnil. Zapisujem jih sproti, ko jih sprejmem.
 
-| #                                         | Odločitev                          |
-| ----------------------------------------- | ---------------------------------- |
-| [1](#1-go-za-storitev)                    | Go za storitev                     |
-| [2](#2-terraform-namesto-cdk)             | Terraform namesto CDK              |
-| [3](#3-ecs-fargate)                       | ECS Fargate                        |
-| [4](#4-build-enkrat-promocija-po-digestu) | Build enkrat, promocija po digestu |
-| [5](#5-github-oidc-namesto-aws-ključev)   | GitHub OIDC namesto AWS ključev    |
-| [6](#6-public-subnets-brez-nat)           | Public subnets brez NAT            |
-| [7](#7-oblika-odgovora)                   | Oblika odgovora                    |
-| [8](#8-struktura-terraforma-in-state)     | Struktura Terraforma in state      |
+| #                                                | Odločitev                                |
+| ------------------------------------------------ | ---------------------------------------- |
+| [1](#1-go-za-storitev)                           | Go za storitev                           |
+| [2](#2-terraform-namesto-cdk)                    | Terraform namesto CDK                    |
+| [3](#3-ecs-fargate)                              | ECS Fargate                              |
+| [4](#4-build-enkrat-promocija-po-digestu)        | Build enkrat, promocija po digestu       |
+| [5](#5-github-oidc-namesto-aws-ključev)          | GitHub OIDC namesto AWS ključev          |
+| [6](#6-public-subnets-brez-nat)                  | Public subnets brez NAT                  |
+| [7](#7-oblika-odgovora)                          | Oblika odgovora                          |
+| [8](#8-struktura-terraforma-in-state)            | Struktura Terraforma in state            |
+| [9](#9-javen-dostop-brez-avtentikacije-in-https) | Javen dostop brez avtentikacije in HTTPS |
 
 ## 1. Go za storitev
 
@@ -67,11 +68,18 @@ Naloga ne pove, ali je `timestamp` število ali niz, in ne omeji `accountId`, ki
 
 **Odločitev:** dva ločena root modula.
 
-- `infra/bootstrap`: poženem ga enkrat, ročno. Ustvari S3 bucket za state, GitHub OIDC provider in role za deploy. State je lokalen.
+- `infra/bootstrap`: poženem ga enkrat, ročno. Ustvari ECR repozitorij, S3 bucket za state, GitHub OIDC provider in role za deploy. State je lokalen. V kodi je zaenkrat samo ECR, ostalo je opisano.
 - `infra/service`: poganja ga pipeline. State je v S3 z native lockingom (`use_lockfile`), brez DynamoDB.
 
 Verzije Terraforma in providerjev pinnam, `.terraform.lock.hcl` je v repozitoriju.
 
-**Zakaj:** pipeline ne more ustvariti state-a in role-a, od katerih je sam odvisen. Z ločitvijo role pipeline-a omejim na resource aplikacije, tako da ne more spreminjati same sebe.
+**Zakaj:** pipeline ne more ustvariti state-a in role-a, od katerih je sam odvisen. Z ločitvijo role pipeline-a omejim na resource aplikacije, tako da ne more spreminjati same sebe. ECR repozitorij je v bootstrapu, ker ga mora pipeline imeti, preden pushne prvi image, in ker brisanje service-a ne sme pobrisati image-ov.
 **Zavrnjeno:** en modul za vse (pipeline bi upravljal lastne pravice), DynamoDB za locking (odveč) in Terraform Cloud (zunanja storitev).
 **Posledica:** en ročni korak, ki ga opišem v README. State bootstrapa moram varno hraniti. Brez AWS accounta oba modula preverim samo s `terraform fmt` in `validate` (`init -backend=false`).
+
+## 9. Javen dostop brez avtentikacije in HTTPS
+
+**Odločitev:** ALB sprejema promet z vsega interneta (`0.0.0.0/0`) na portu 80. Service nima avtentikacije, promet ni šifriran, pred ALB ni WAF.
+**Zakaj:** naloga zahteva javno dostopen HTTP service z eno GET potjo. Odgovor ne vsebuje občutljivih podatkov: naključen niz, timestamp in `accountId`, ki ga validiram (odločitev 7). HTTPS zahteva ACM certifikat in domeno, ki je nimam. Izpostavljenost zmanjšam s security groupi: na ALB je odprt samo port 80, taski pa sprejemajo promet samo iz security groupa ALB.
+**Zavrnjeno:** omejitev dostopa na moj IP (service je namenjen odjemalcem, ne samo meni; za demo deploy bi to lahko dodal), avtentikacija z API keyem ali JWT (naloga je ne zahteva in bi povečala obseg), WAF (dodaten strošek in obseg).
+**Posledica:** vsak, ki pozna DNS ime ALB, lahko kliče service. Tveganje je predvsem strošek ob veliki količini zahtevkov in nešifriran promet. Za pravi production bi dodal HTTPS (ACM + Route 53), WAF z rate limitom in po potrebi avtentikacijo ali omejitev po IP. Vse to je v razdelku 13 specifikacije.
