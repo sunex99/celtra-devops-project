@@ -1,0 +1,101 @@
+name: CI
+
+# Run on every pull request and on every push to main.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# The workflow only needs to read the repository.
+permissions:
+  contents: read
+
+# Cancel an older run of the same branch when a new commit is pushed.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Build the image once. Later jobs test and deploy this exact image, so what is tested is what is shipped (see docs/ODLOCITVE.md, decision 4).
+  build:
+    name: Build image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build image
+        run: docker build -f image/Dockerfile -t data-service:ci .
+
+      # Jobs run on separate machines, so the image is saved to a tar file and passed on as a workflow artifact.
+      - name: Save image to a tar file
+        run: docker save data-service:ci -o data-service.tar
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: data-service-image
+          path: data-service.tar
+          retention-days: 7
+          if-no-files-found: error
+
+  # Runs the image that the build job produced, not a fresh build. It needs
+  # build, so it only starts after the image exists.
+  container-test:
+    name: Container test
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      # The checkout is only needed for the check script.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: data-service-image
+
+      - name: Load image
+        run: docker load -i data-service.tar
+
+      - name: Check that the image does not run as root
+        run: |
+          user="$(docker inspect --format '{{.Config.User}}' data-service:ci)"
+          echo "Image user: '$user'"
+          if [ -z "$user" ] || [ "$user" = "root" ] || [ "$user" = "0" ]; then
+            echo "The image runs as root" >&2
+            exit 1
+          fi
+
+      - name: Start container
+        run: docker run --detach --name data-service --publish 8080:8080 data-service:ci
+
+      - name: Check the service contract
+        run: bash scripts/check-service.sh http://localhost:8080
+
+      # Logs are most useful when a check failed, so always print them.
+      - name: Show container logs
+        if: always()
+        run: docker logs data-service
+
+      - name: Stop container
+        if: always()
+        run: docker rm --force data-service
+
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      # Actions are pinned by commit SHA; the tag is kept in the comment.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # Use the Go version declared in go.mod, so CI and local builds match.
+          go-version-file: go.mod
+
+      # gofmt exits 0 even when files need formatting, so fail on any output.
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race -count=1 ./...
