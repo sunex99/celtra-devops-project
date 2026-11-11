@@ -88,7 +88,7 @@ Workflow `ci.yml` teče ob vsakem pull requestu in pushu na `main`.
 | Job | Kaj naredi | Kaj dokaže |
 | --- | --- | --- |
 | `build` | Enkrat zgradi image in ga naloži kot artifact | Image se zgradi |
-| `container-test` (potrebuje `build`) | Naloži **isti artifact**, preveri da ne teče kot root, ga zažene in požene `scripts/check-service.sh` | Image deluje in drži dogovorjeni JSON, vključno z 400, 404 in 405 |
+| `container-test` (potrebuje `build`) | Naloži **isti artifact**, preveri da ne teče kot root, ga zažene z enakimi omejitvami kot na ECS (read-only filesystem, brez Linux capabilities) in požene `scripts/check-service.sh` | Image deluje in drži dogovorjeni JSON, vključno z 400, 404 in 405 |
 | `test` | `gofmt`, `go vet`, `go test -race` | Obnašanje handlerjev in validacija |
 
 Actions so pinnane na **commit SHA**, workflow ima samo `contents: read`. Isti script `check-service.sh` služi tudi kot smoke test po deployu, zato je pogodba preverjena na enem mestu.
@@ -133,9 +133,9 @@ Vsa infrastruktura je v Terraformu, v dveh ločenih modulih. Verzije Terraforma 
 | VPC, 2 AZ, public subnets | Brez NAT |
 | ALB, target group, listener | Health check na `/healthz`, port 80 |
 | Security groups | Taski sprejemajo promet samo iz security groupa ALB |
-| ECS cluster, task definition, service | 2 taska, rolling deploy brez izpada, circuit breaker z rollbackom |
+| ECS cluster, task definition, service | 2 taska, rolling deploy brez izpada, circuit breaker z rollbackom, stare revizije task definitiona ostanejo za rollback |
 | IAM execution role | Pull samo iz tega ECR repozitorija, pisanje samo v ta log group |
-| CloudWatch | Log group (14 dni), 3 alarmi: število 5xx, unhealthy taski, p99 latency |
+| CloudWatch | Log group (14 dni), 4 alarmi: število 5xx, unhealthy taski, p99 latency, noben healthy task |
 
 **Odločitve:**
 
