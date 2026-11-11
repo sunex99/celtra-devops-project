@@ -77,6 +77,11 @@ resource "aws_ecs_task_definition" "app" {
   memory                   = var.task_memory
   execution_role_arn       = aws_iam_role.execution.arn
 
+  # Keep old revisions when a deploy creates a new one. Without this Terraform
+  # deregisters the previous revision, and the circuit breaker would have no
+  # active task definition to roll back to.
+  skip_destroy = true
+
   runtime_platform {
     operating_system_family = "LINUX"
     # Must match the CPU architecture of the image. CI builds on an amd64 runner, so the image is x86_64.
