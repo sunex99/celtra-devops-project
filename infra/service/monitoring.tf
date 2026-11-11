@@ -2,8 +2,9 @@
 # unhealthy, or responses are slow. Where notifications go is left to the
 # alarm_actions variable (for example an SNS topic).
 #
-# For all three, "no data" counts as OK: with no traffic there are no
-# requests to measure, and that is not a problem.
+# For the first three, "no data" counts as OK: with no traffic there are no
+# requests to measure, and that is not a problem. The last alarm is the
+# opposite: it catches a full outage, where the others have nothing to measure.
 
 locals {
   # Identify this load balancer and target group in the metrics.
@@ -60,6 +61,25 @@ resource "aws_cloudwatch_metric_alarm" "latency_p99" {
   threshold           = 1
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
+  alarm_actions       = var.alarm_actions
+  ok_actions          = var.alarm_actions
+}
+
+# No task is able to serve traffic. In that state the load balancer answers
+# with 503 itself, so the alarms above see no target errors and no unhealthy
+# hosts. Missing data counts as a problem here: no data means no healthy task.
+resource "aws_cloudwatch_metric_alarm" "no_healthy_hosts" {
+  alarm_name          = "${var.project_name}-no-healthy-hosts"
+  alarm_description   = "No healthy task has been behind the load balancer for 2 minutes"
+  namespace           = "AWS/ApplicationELB"
+  metric_name         = "HealthyHostCount"
+  dimensions          = local.alb_dimensions
+  statistic           = "Minimum"
+  period              = 60
+  evaluation_periods  = 2
+  threshold           = 1
+  comparison_operator = "LessThanThreshold"
+  treat_missing_data  = "breaching"
   alarm_actions       = var.alarm_actions
   ok_actions          = var.alarm_actions
 }
