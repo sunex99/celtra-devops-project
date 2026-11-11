@@ -63,8 +63,13 @@ jobs:
             exit 1
           fi
 
+      # Same restrictions as the ECS task definition: read-only filesystem and
+      # no Linux capabilities. This proves the image works under them.
       - name: Start container
-        run: docker run --detach --name data-service --publish 8080:8080 data-service:ci
+        run: |
+          docker run --detach --name data-service --publish 8080:8080 \
+            --read-only --cap-drop=ALL --security-opt=no-new-privileges \
+            data-service:ci
 
       - name: Check the service contract
         run: bash scripts/check-service.sh http://localhost:8080
